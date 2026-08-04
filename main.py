@@ -1,3 +1,12 @@
+from models.user import User, UserCreate, UserLogin
+
+from auth import (
+    hash_password,
+    verify_password,
+    create_access_token,
+    get_current_user,
+)
+from fastapi.security import OAuth2PasswordRequestForm
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
@@ -17,7 +26,13 @@ from models.supplier import (
     Supplier,
     SupplierCreate,
 )
-
+def admin_required(current_user=Depends(get_current_user)):
+    if current_user["role"] != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied. Admins only."
+        )
+    return current_user
 app = FastAPI(
     title="Product Inventory API",
     version="1.0.0"
@@ -39,7 +54,6 @@ async def http_exception_handler(request: Request, exc: HTTPException):
         },
     )
 
-
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     return JSONResponse(
@@ -48,11 +62,11 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "success": False,
             "status_code": 422,
             "message": "Validation Error",
-            "errors": exc.errors(),
             "timestamp": datetime.utcnow().isoformat(),
             "path": str(request.url.path),
         },
     )
+
 
 
 @app.exception_handler(Exception)
@@ -120,7 +134,8 @@ def get_supplier(
 @app.post("/products", response_model=Product, status_code=201)
 def create_product(
     product: ProductCreate,
-    session: Session = Depends(get_session)
+    session: Session = Depends(get_session),
+    current_user=Depends(admin_required)
 ):
     if product.supplier_id is not None:
         supplier = session.get(Supplier, product.supplier_id)
@@ -260,6 +275,7 @@ def update_product(
     product_id: int,
     updated_product: ProductUpdate,
     session: Session = Depends(get_session),
+    current_user=Depends(admin_required),
 ):
     product = session.get(Product, product_id)
 
@@ -292,7 +308,8 @@ def update_product(
 @app.delete("/products/{product_id}")
 def delete_product(
     product_id: int,
-    session: Session = Depends(get_session)
+    session: Session = Depends(get_session),
+    current_user=Depends(admin_required)
 ):
     product = session.get(Product, product_id)
 
@@ -303,3 +320,82 @@ def delete_product(
     session.commit()
 
     return {"message": "Product deleted successfully"}
+@app.post("/register", response_model=User, status_code=201)
+def register(
+    user: UserCreate,
+    session: Session = Depends(get_session)
+):
+    # Check username
+    existing_user = session.exec(
+        select(User).where(User.username == user.username)
+    ).first()
+
+    if existing_user:
+        raise HTTPException(
+            status_code=400,
+            detail="Username already exists"
+        )
+
+    # Check email
+    existing_email = session.exec(
+        select(User).where(User.email == user.email)
+    ).first()
+
+    if existing_email:
+        raise HTTPException(
+            status_code=400,
+            detail="Email already exists"
+        )
+
+    db_user = User(
+        username=user.username,
+        email=user.email,
+        hashed_password=hash_password(user.password),
+        role=user.role,
+    )
+
+    session.add(db_user)
+    session.commit()
+    session.refresh(db_user)
+
+    return db_user
+@app.post("/login")
+def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    session: Session = Depends(get_session)
+):
+    user = session.exec(
+        select(User).where(User.username == form_data.username)
+    ).first()
+
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid username or password"
+        )
+
+    if not verify_password(
+        form_data.password,
+        user.hashed_password
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid username or password"
+        )
+
+    access_token = create_access_token(
+        {
+            "sub": user.username,
+            "role": user.role
+        }
+    )
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer"
+    }
+@app.get("/me")
+def read_current_user(
+    current_user: dict = Depends(get_current_user)
+):
+    return current_user

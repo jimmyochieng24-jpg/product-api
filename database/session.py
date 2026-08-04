@@ -2,9 +2,10 @@ from sqlmodel import SQLModel, Session, create_engine
 from dotenv import load_dotenv
 import os
 
-# Import all models so SQLModel registers their tables
+# Import models so SQLModel creates their tables
 from models.product import Product
 from models.supplier import Supplier
+from models.user import User
 
 load_dotenv()
 
